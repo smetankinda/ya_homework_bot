@@ -28,36 +28,23 @@ HOMEWORK_VERDICTS = {
 }
 
 
-# logging.basicConfig(
-#     level=logging.DEBUG,
-#     format='%(asctime)s, %(levelname)s, %(message)s, %(name)s',
-# )
 logger = logging.getLogger('logger')
 logger.setLevel(logging.DEBUG)
 logger.addHandler(logging.StreamHandler())
 handler = logging.StreamHandler(stream=sys.stdout)
-handler.setFormatter(logging.Formatter(
-    fmt='[%(asctime)s: %(levelname)s]'))
+handler.setFormatter(logging.Formatter(fmt='[%(asctime)s: %(levelname)s]'))
 logger.addHandler(handler)
 logger.debug('Бот ожил!')
 
 
 def check_tokens():
     """Функция проверки доступности переменных окружения."""
-    tokens = {
-        'practicum_token': PRACTICUM_TOKEN,
-        'telegram_token': TELEGRAM_TOKEN,
-        'telegram_chat_id': TELEGRAM_CHAT_ID,
-    }
-    for key, value in tokens.items():
-        if value is None:
-            logger.critical(f'{key} не найден, работа прервана')
-            return False
-    return True
+    return all((PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID))
 
 
 def send_message(bot, message):
     """Функция отправки сообщения."""
+    logger.debug('Попытка отправки сообщения')
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
         logger.debug(f'Отправлено сообщение: {message}')
@@ -67,6 +54,7 @@ def send_message(bot, message):
 
 def get_api_answer(timestamp):
     """Функция запроса к эндпоинту API-сервиса."""
+    logger.debug('Попытка запроса к эндпоинту API-сервиса')
     try:
         params = {'from_date': timestamp}
         response = requests.get(
@@ -81,62 +69,62 @@ def get_api_answer(timestamp):
         )
     if response.status_code == HTTPStatus.OK:
         return response_content
-    else:
-        logger.error('Ошибка в обращении к эндпоинту API-сервиса')
-        raise exceptions.Not200HttpStatus
+    raise exceptions.Not200HttpStatus
 
 
 def check_response(response):
     """Функция проверяет ответ API на соответствие документации."""
-    try:
-        timestamp = response['current_date']
-    except KeyError:
-        logger.error('Ключ current_date отсутствует в response')
-    try:
-        homeworks = response['homeworks']
-    except KeyError:
-        logger.error('Ключ homeworks отсутствует в response')
-    if isinstance(timestamp, int) and isinstance(homeworks, list):
-        return homeworks
-    else:
-        raise TypeError
+    if not isinstance(response, dict):
+        raise TypeError('Неверный тип response. Ожидается словарь.')
+    homeworks = response.get('homeworks')
+    if 'homeworks' not in response:
+        raise KeyError('Ключ homeworks отсутствует в response')
+    if 'current_date' not in response:
+        raise KeyError('Ключ current_date отсутствует в response')
+    if not isinstance(homeworks, list):
+        raise TypeError('Неверный тип homeworks. Ожидается список.')
+    return homeworks
 
 
 def parse_status(homework):
     """Функция проверяет статус домашнего задания."""
-    try:
-        homework_name = homework['homework_name']
-    except KeyError:
-        logger.error('Ключ homework_name отсутствует')
+    homework_name = homework.get('homework_name')
     homework_status = homework.get('status')
-    if homework_status in HOMEWORK_VERDICTS:
-        verdict = HOMEWORK_VERDICTS.get(homework_status)
-        return f'Изменился статус проверки работы "{homework_name}". {verdict}'
-    else:
+    if 'homework_name' not in homework:
+        raise KeyError('Ключ homeworks отсутствует в homework')
+    if 'status' not in homework:
+        raise KeyError('Ключ status отсутствует в homework')
+    if homework_status not in HOMEWORK_VERDICTS:
         raise exceptions.UnknownHomeworkStatus
+    verdict = HOMEWORK_VERDICTS[homework_status]
+    return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
 
 def main():
     """Основная логика работы бота."""
-    if check_tokens():
-        bot = telegram.Bot(token=TELEGRAM_TOKEN)
-        timestamp = int(time.time())
+    if not check_tokens():
+        message = 'Недоступна одна или несколько переменных окружения.'
+        logger.critical(message)
+        sys.exit(message)
+    bot = telegram.Bot(token=TELEGRAM_TOKEN)
+    timestamp = int(time.time())
 
     while True:
         try:
             response = get_api_answer(timestamp)
             homeworks = check_response(response)
-            all_works = len(homeworks)
-            while all_works > 0:
-                message = parse_status(homeworks[all_works - 1])
+            if homeworks:
+                message = parse_status(homeworks[0])
                 send_message(bot, message)
-                all_works -= 1
+            else:
+                logger.info(
+                    f'Изменений в статусе нет, ждём {RETRY_PERIOD} секунд')
             timestamp = int(time.time())
-            logger.info(f'Изменений в статусе нет, ждём {RETRY_PERIOD} секунд')
-            time.sleep(RETRY_PERIOD)
         except Exception as error:
             message = f'Бот сломался: {error}'
+            logger.error(message)
             send_message(bot, message)
+        finally:
             time.sleep(RETRY_PERIOD)
 
 
